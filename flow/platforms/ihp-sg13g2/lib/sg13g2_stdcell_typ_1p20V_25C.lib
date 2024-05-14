@@ -58,7 +58,7 @@ library (sg13g2_stdcell_typ_1p20V_25C) {
     temperature : 25;
     voltage : 1.2;
   }
-  wire_load (Zero) {
+  wire_load ("Zero") {
     area : 0.01;
     capacitance : 0.0001;
     resistance : 0.0001;

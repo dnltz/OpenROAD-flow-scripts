@@ -58,7 +58,7 @@ library (sg13g2_stdcell_slow_1p08V_125C) {
     temperature : 125;
     voltage : 1.08;
   }
-  wire_load (Zero) {
+  wire_load ("Zero") {
     area : 0.01;
     capacitance : 0.0001;
     resistance : 0.0001;
