@@ -82,7 +82,7 @@
    <read-lef-with-def>true</read-lef-with-def>
    <macro-resolution-mode>default</macro-resolution-mode>
    <separate-groups>false</separate-groups>
-   <map-file>../../../../platforms/ihp-sg13g2/sg13g2.map</map-file>
+   <map-file/>
    <lef-files>merged.lef</lef-files> 
   </lefdef>
   <mebes>

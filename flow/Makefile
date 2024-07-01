@@ -189,8 +189,11 @@ export RESYNTH_AREA_RECOVER ?= 0
 export RESYNTH_TIMING_RECOVER ?= 0
 export ABC_AREA ?= 0
 
-# Global setting for Synthesis
-export SYNTH_ARGS ?= -flatten -extra-map $(FLOW_HOME)/platforms/common/lcu_kogge_stone.v
+# User adjustable synthesis arguments
+export SYNTH_ARGS ?= -flatten
+# Not normally adjusted by user
+export SYNTH_OPERATIONS_ARGS ?= -extra-map $(FLOW_HOME)/platforms/common/lcu_kogge_stone.v
+export SYNTH_FULL_ARGS ?= $(SYNTH_ARGS) $(SYNTH_OPERATIONS_ARGS)
 
 # Global setting for Floorplan
 export PLACE_PINS_ARGS
@@ -200,12 +203,17 @@ export FLOW_VARIANT ?= base
 export GPL_TIMING_DRIVEN ?= 1
 export GPL_ROUTABILITY_DRIVEN ?= 1
 
+# Cell padding in SITE widths to ease rout-ability.  Applied to both sides
+export CELL_PAD_IN_SITES_GLOBAL_PLACEMENT ?= 0
+export CELL_PAD_IN_SITES_DETAIL_PLACEMENT ?= 0
+
 export ENABLE_DPO ?= 1
 export DPO_MAX_DISPLACEMENT ?= 5 1
 
 # Setup working directories
 export DESIGN_NICKNAME ?= $(DESIGN_NAME)
 
+export DESIGN_CONFIG
 export DESIGN_DIR  = $(dir $(DESIGN_CONFIG))
 export LOG_DIR     = $(WORK_HOME)/logs/$(PLATFORM)/$(DESIGN_NICKNAME)/$(FLOW_VARIANT)
 export OBJECTS_DIR = $(WORK_HOME)/objects/$(PLATFORM)/$(DESIGN_NICKNAME)/$(FLOW_VARIANT)
@@ -461,7 +469,7 @@ do-synth-report:
 	($(TIME_CMD) $(OPENROAD_CMD) $(SCRIPTS_DIR)/synth_metrics.tcl) 2>&1 | tee -a $(LOG_DIR)/1_1_yosys.log
 
 .PHONY: memory
-memory: $(RESULTS_DIR)/mem.json
+memory:
 	python3 $(SCRIPTS_DIR)/mem_dump.py $(RESULTS_DIR)/mem.json
 
 # ==============================================================================
@@ -648,8 +656,6 @@ endif
 # STEP 4: Macro Placement
 #-------------------------------------------------------------------------------
 $(eval $(call do-step,2_4_floorplan_macro,$(RESULTS_DIR)/2_3_floorplan_tdms.odb $(RESULTS_DIR)/1_synth.v $(RESULTS_DIR)/1_synth.sdc $(MACRO_PLACEMENT) $(MACRO_PLACEMENT_TCL),macro_place))
-
-$(eval $(call do-step,2_floorplan_debug_macros,$(RESULTS_DIR)/2_1_floorplan.odb $(RESULTS_DIR)/1_synth.v $(MACRO_PLACEMENT) $(MACRO_PLACEMENT_TCL),floorplan_debug_macros))
 
 # STEP 5: Tapcell and Welltie insertion
 #-------------------------------------------------------------------------------
@@ -1028,18 +1034,6 @@ RESULTS_OAS = $(notdir $(sort $(wildcard $(RESULTS_DIR)/*.oas)))
 .PHONY: $(foreach file,$(RESULTS_DEF) $(RESULTS_GDS) $(RESULTS_OAS),klayout_$(file))
 $(foreach file,$(RESULTS_DEF) $(RESULTS_GDS) $(RESULTS_OAS),klayout_$(file)): klayout_%: $(OBJECTS_DIR)/klayout.lyt
 	$(KLAYOUT_CMD) -nn $(OBJECTS_DIR)/klayout.lyt $(RESULTS_DIR)/$*
-
-.PHONY: preview_macro_placement
-
-ifneq ($(or $(MACRO_PLACEMENT),$(MACRO_PLACEMENT_TCL)),)
-MACRO_PREVIEW_ODB = 2_floorplan_debug_macros.odb
-else
-MACRO_PREVIEW_ODB = 2_4_floorplan_macro.odb
-endif
-
-preview_macro_placement:
-	@$(UNSET_AND_MAKE) $(RESULTS_DIR)/$(MACRO_PREVIEW_ODB)
-	@$(UNSET_AND_MAKE) gui_$(MACRO_PREVIEW_ODB)
 
 .PHONY: gui_synth
 gui_synth:
