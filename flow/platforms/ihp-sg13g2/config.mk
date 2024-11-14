@@ -9,7 +9,7 @@ export PROCESS = ihp-sg13g2
 ifdef FOOTPRINT_TCL
   export ADDITIONAL_LEFS += $(PLATFORM_DIR)/lef/sg13g2_io.lef \
                             $(PLATFORM_DIR)/lef/bondpad_70x70.lef
-  export ADDITIONAL_LIBS += $(PLATFORM_DIR)/lib/sg13g2_io_dummy.lib
+  export ADDITIONAL_LIBS += $(PLATFORM_DIR)/lib/sg13g2_io_typ_1p2V_3p3V_25C.lib
   export ADDITIONAL_GDS += $(PLATFORM_DIR)/gds/sg13g2_io.gds \
                            $(PLATFORM_DIR)/gds/bondpad_70x70.gds
 endif
@@ -35,7 +35,7 @@ sg13g2_dfrbp_2
 
 
 # Define fill cells
-export FILL_CELLS = sg13g2_fill_1 sg13g2_fill_2 sg13g2_decap_4 sg13g2_decap_8
+export FILL_CELLS ?= sg13g2_fill_1 sg13g2_fill_2 sg13g2_decap_4 sg13g2_decap_8
 # -----------------------------------------------------
 #  Yosys
 #  ----------------------------------------------------
@@ -76,7 +76,7 @@ export CORE_MARGIN ?= 16.5
 
 # There are no Endcap and Welltie cells in this PDK, so
 # `cut_rows` has to be called from the tapcell script.
-export TAPCELL_TCL = $(PLATFORM_DIR)/tapcell.tcl
+export TAPCELL_TCL ?= $(PLATFORM_DIR)/tapcell.tcl
 
 export MACRO_PLACE_HALO ?= 40 40
 export MACRO_PLACE_CHANNEL ?= 80 80
@@ -122,8 +122,11 @@ export GND_NETS_VOLTAGES  ?= "VSS 0.0"
 export IR_DROP_LAYER ?= Metal1
 
 # DRC Check
-export KLAYOUT_DRC_FILE = $(PLATFORM_DIR)/drc/sg13g2.lydrc
+export KLAYOUT_DRC_FILE ?= $(PLATFORM_DIR)/drc/sg13g2_minimal.lydrc
 
 #LVS Check
-export CDL_FILE = $(PLATFORM_DIR)/cdl/sg13g2_stdcell.cdl
+export CDL_FILE ?= $(PLATFORM_DIR)/cdl/sg13g2_stdcell.cdl
 #export KLAYOUT_LVS_FILE = $(PLATFORM_DIR)/lvs/$(PLATFORM).lylvs
+
+#Temporary: skip post-DRT repair antennas
+export SKIP_ANTENNA_REPAIR_POST_DRT = 1

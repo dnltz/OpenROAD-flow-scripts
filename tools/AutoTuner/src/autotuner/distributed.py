@@ -29,13 +29,18 @@ import json
 import os
 import re
 import sys
+import glob
+import subprocess
+import random
 from datetime import datetime
 from multiprocessing import cpu_count
 from subprocess import run
 from itertools import product
+from collections import namedtuple
 from uuid import uuid4 as uuid
 
 import numpy as np
+import torch
 
 import ray
 from ray import tune
@@ -45,12 +50,9 @@ from ray.tune.search import ConcurrencyLimiter
 from ray.tune.search.ax import AxSearch
 from ray.tune.search.basic_variant import BasicVariantGenerator
 from ray.tune.search.hyperopt import HyperOptSearch
-
-# from ray.tune.search.nevergrad import NevergradSearch
 from ray.tune.search.optuna import OptunaSearch
 from ray.util.queue import Queue
 
-# import nevergrad as ng
 from ax.service.ax_client import AxClient
 
 DATE = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
@@ -59,6 +61,9 @@ FASTROUTE_TCL = "fastroute.tcl"
 CONSTRAINTS_SDC = "constraint.sdc"
 METRIC = "minimum"
 ERROR_METRIC = 9e99
+ORFS_FLOW_DIR = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "../../../../flow")
+)
 
 
 class AutoTunerBase(tune.Trainable):
@@ -183,6 +188,9 @@ class PPAImprov(AutoTunerBase):
     def evaluate(self, metrics):
         error = "ERR" in metrics.values() or "ERR" in reference.values()
         not_found = "N/A" in metrics.values() or "N/A" in reference.values()
+        print("Metrics", metrics.values())
+        print("Reference", reference.values())
+        print(error, not_found)
         if error or not_found:
             return ERROR_METRIC
         ppa = self.get_ppa(metrics)
@@ -202,6 +210,10 @@ def read_config(file_name):
     """
 
     def read(path):
+        # if file path does not exist, return empty string
+        print(os.path.abspath(path))
+        if not os.path.isfile(os.path.abspath(path)):
+            return ""
         with open(os.path.abspath(path), "r") as file:
             ret = file.read()
         return ret
@@ -216,24 +228,19 @@ def read_config(file_name):
         if args.algorithm != "random":
             return config
         dp_pad_min = data["CELL_PAD_IN_SITES_DETAIL_PLACEMENT"]["minmax"][0]
-        # dp_pad_max = data['CELL_PAD_IN_SITES_DETAIL_PLACEMENT']['minmax'][1]
         dp_pad_step = data["CELL_PAD_IN_SITES_DETAIL_PLACEMENT"]["step"]
         if dp_pad_step == 1:
             config["CELL_PAD_IN_SITES_DETAIL_PLACEMENT"] = tune.sample_from(
-                lambda spec: tune.randint(
+                lambda spec: np.random.randint(
                     dp_pad_min, spec.config.CELL_PAD_IN_SITES_GLOBAL_PLACEMENT + 1
                 )
             )
         if dp_pad_step > 1:
             config["CELL_PAD_IN_SITES_DETAIL_PLACEMENT"] = tune.sample_from(
-                lambda spec: tune.choice(
-                    np.ndarray.tolist(
-                        np.arange(
-                            dp_pad_min,
-                            spec.config.CELL_PAD_IN_SITES_GLOBAL_PLACEMENT + 1,
-                            dp_pad_step,
-                        )
-                    )
+                lambda spec: random.randrange(
+                    dp_pad_min,
+                    spec.config.CELL_PAD_IN_SITES_GLOBAL_PLACEMENT + 1,
+                    dp_pad_step,
                 )
             )
         return config
@@ -243,13 +250,8 @@ def read_config(file_name):
         if min_ == max_:
             # Returning a choice of a single element allow pbt algorithm to
             # work. pbt does not accept single values as tunable.
-            return tune.choice([min_])
+            return tune.choice([min_, max_])
         if this["type"] == "int":
-            if min_ == 0 and args.algorithm == "nevergrad":
-                print(
-                    "[WARNING TUN-0011] NevergradSearch may not work "
-                    "with lower bound value 0."
-                )
             if this["step"] == 1:
                 return tune.randint(min_, max_)
             return tune.choice(np.ndarray.tolist(np.arange(min_, max_, this["step"])))
@@ -260,7 +262,12 @@ def read_config(file_name):
         return None
 
     def read_tune_ax(name, this):
+        """
+        Ax format: https://ax.dev/versions/0.3.7/api/service.html
+        """
         dict_ = dict(name=name)
+        if "minmax" not in this:
+            return None
         min_, max_ = this["minmax"]
         if min_ == max_:
             dict_["type"] = "fixed"
@@ -286,6 +293,21 @@ def read_config(file_name):
                 dict_["bounds"] = [min_, max_]
                 dict_["value_type"] = "float"
         return dict_
+
+    def read_tune_pbt(name, this):
+        """
+        PBT format: https://docs.ray.io/en/releases-2.9.3/tune/examples/pbt_guide.html
+        Note that PBT does not support step values.
+        """
+        if "minmax" not in this:
+            return None
+        min_, max_ = this["minmax"]
+        if min_ == max_:
+            return ray.tune.choice([min_, max_])
+        if this["type"] == "int":
+            return ray.tune.randint(min_, max_)
+        if this["type"] == "float":
+            return ray.tune.uniform(min_, max_)
 
     # Check file exists and whether it is a valid JSON file.
     assert os.path.isfile(file_name), f"File {file_name} not found."
@@ -314,16 +336,67 @@ def read_config(file_name):
             fr_file = read(f"{os.path.dirname(file_name)}/{value}")
             continue
         if not isinstance(value, dict):
-            config[key] = value
+            # To take care of empty values like _FR_FILE_PATH
+            if args.mode == "tune" and args.algorithm == "ax":
+                param_dict = read_tune_ax(key, value)
+                if param_dict:
+                    config.append(param_dict)
+            elif args.mode == "tune" and args.algorithm == "pbt":
+                param_dict = read_tune_pbt(key, value)
+                if param_dict:
+                    config[key] = param_dict
+            else:
+                config[key] = value
         elif args.mode == "sweep":
             config[key] = read_sweep(value)
-        elif args.mode == "tune" and args.algorithm != "ax":
-            config[key] = read_tune(value)
         elif args.mode == "tune" and args.algorithm == "ax":
             config.append(read_tune_ax(key, value))
+        elif args.mode == "tune" and args.algorithm == "pbt":
+            config[key] = read_tune_pbt(key, value)
+        elif args.mode == "tune":
+            config[key] = read_tune(value)
     if args.mode == "tune":
         config = apply_condition(config, data)
     return config, sdc_file, fr_file
+
+
+def parse_flow_variables():
+    """
+    Parse the flow variables from source
+    - Code: Makefile `vars` target output
+
+    TODO: Tests.
+
+    Output:
+    - flow_variables: set of flow variables
+    """
+    cur_path = os.path.dirname(os.path.realpath(__file__))
+
+    # first, generate vars.tcl
+    makefile_path = os.path.join(cur_path, "../../../../flow/")
+    initial_path = os.path.abspath(os.getcwd())
+    os.chdir(makefile_path)
+    result = subprocess.run(["make", "vars", f"PLATFORM={args.platform}"])
+    if result.returncode != 0:
+        print(f"[ERROR TUN-0018] Makefile failed with error code {result.returncode}.")
+        sys.exit(1)
+    if not os.path.exists("vars.tcl"):
+        print(f"[ERROR TUN-0019] Makefile did not generate vars.tcl.")
+        sys.exit(1)
+    os.chdir(initial_path)
+
+    # for code parsing, you need to parse from both scripts and vars.tcl file.
+    pattern = r"(?:::)?env\((.*?)\)"
+    files = glob.glob(os.path.join(cur_path, "../../../../flow/scripts/*.tcl"))
+    files.append(os.path.join(cur_path, "../../../../flow/vars.tcl"))
+    variables = set()
+    for file in files:
+        with open(file) as fp:
+            matches = re.findall(pattern, fp.read())
+        for match in matches:
+            for variable in match.split("\n"):
+                variables.add(variable.strip().upper())
+    return variables
 
 
 def parse_config(config, path=os.getcwd()):
@@ -333,6 +406,7 @@ def parse_config(config, path=os.getcwd()):
     options = ""
     sdc = {}
     fast_route = {}
+    flow_variables = parse_flow_variables()
     for key, value in config.items():
         # Keys that begin with underscore need special handling.
         if key.startswith("_"):
@@ -352,6 +426,13 @@ def parse_config(config, path=os.getcwd()):
                 )
         # Default case is VAR=VALUE
         else:
+            # FIXME there is no robust way to get this metainformation from
+            # ORFS about the variables, so disable this code for now.
+
+            # Sanity check: ignore all flow variables that are not tunable
+            # if key not in flow_variables:
+            #     print(f"[ERROR TUN-0017] Variable {key} is not tunable.")
+            #     sys.exit(1)
             options += f" {key}={value}"
     if bool(sdc):
         write_sdc(sdc, path)
@@ -366,7 +447,10 @@ def write_sdc(variables, path):
     """
     Create a SDC file with parameters for current tuning iteration.
     """
-    # TODO: handle case where the reference file does not exist
+    # Handle case where the reference file does not exist
+    if SDC_ORIGINAL == "":
+        print("[ERROR TUN-0020] No SDC reference file provided.")
+        sys.exit(1)
     new_file = SDC_ORIGINAL
     for key, value in variables.items():
         if key == "CLK_PERIOD":
@@ -405,7 +489,10 @@ def write_fast_route(variables, path):
     """
     Create a FastRoute Tcl file with parameters for current tuning iteration.
     """
-    # TODO: handle case where the reference file does not exist
+    # Handle case where the reference file does not exist (asap7 doesn't have reference)
+    if FR_ORIGINAL == "" and args.platform != "asap7":
+        print("[ERROR TUN-0021] No FastRoute Tcl reference file provided.")
+        sys.exit(1)
     layer_cmd = "set_global_routing_layer_adjustment"
     new_file = FR_ORIGINAL
     for key, value in variables.items():
@@ -477,12 +564,13 @@ def openroad(base_dir, parameters, flow_variant, path=""):
         log_path = report_path = os.getcwd() + "/"
 
     export_command = f"export PATH={INSTALL_PATH}/OpenROAD/bin"
-    export_command += f":{INSTALL_PATH}/yosys/bin"
+    export_command += f":{INSTALL_PATH}/yosys/bin:$PATH"
     export_command += " && "
 
     make_command = export_command
     make_command += f"make -C {base_dir}/flow DESIGN_CONFIG=designs/"
     make_command += f"{args.platform}/{args.design}/config.mk"
+    make_command += f" PLATFORM={args.platform}"
     make_command += f" FLOW_VARIANT={flow_variant} {parameters}"
     make_command += f" EQUIVALENCE_CHECK=0"
     make_command += f" NPROC={args.openroad_threads} SHELL=bash"
@@ -671,7 +759,7 @@ def parse_arguments():
     tune_parser.add_argument(
         "--algorithm",
         type=str,
-        choices=["hyperopt", "ax", "nevergrad", "optuna", "pbt", "random"],
+        choices=["hyperopt", "ax", "optuna", "pbt", "random"],
         default="hyperopt",
         help="Search algorithm to use for Autotuning.",
     )
@@ -701,7 +789,7 @@ def parse_arguments():
         type=int,
         metavar="<int>",
         default=1,
-        help="Number of CPUs to request for each tunning job.",
+        help="Number of CPUs to request for each tuning job.",
     )
     tune_parser.add_argument(
         "--reference",
@@ -718,7 +806,11 @@ def parse_arguments():
         help="Perturbation interval for PopulationBasedTraining.",
     )
     tune_parser.add_argument(
-        "--seed", type=int, metavar="<int>", default=42, help="Random seed."
+        "--seed",
+        type=int,
+        metavar="<int>",
+        default=42,
+        help="Random seed. (0 means no seed.)",
     )
 
     # Workload
@@ -783,25 +875,40 @@ def set_algorithm(experiment_name, config):
     """
     Configure search algorithm.
     """
+    # Pre-set seed if user sets seed to 0
+    if args.seed == 0:
+        print(
+            "Warning: you have chosen not to set a seed. Do you wish to continue? (y/n)"
+        )
+        if input().lower() != "y":
+            sys.exit(0)
+        args.seed = None
+    else:
+        torch.manual_seed(args.seed)
+        np.random.seed(args.seed)
+        random.seed(args.seed)
+
     if args.algorithm == "hyperopt":
-        algorithm = HyperOptSearch(points_to_evaluate=best_params)
+        algorithm = HyperOptSearch(
+            points_to_evaluate=best_params,
+            random_state_seed=args.seed,
+        )
     elif args.algorithm == "ax":
-        ax_client = AxClient(enforce_sequential_optimization=False)
+        ax_client = AxClient(
+            enforce_sequential_optimization=False,
+            random_seed=args.seed,
+        )
+        AxClientMetric = namedtuple("AxClientMetric", "minimize")
         ax_client.create_experiment(
             name=experiment_name,
             parameters=config,
-            objective_name=METRIC,
-            minimize=True,
+            objectives={METRIC: AxClientMetric(minimize=True)},
         )
         algorithm = AxSearch(ax_client=ax_client, points_to_evaluate=best_params)
-    elif args.algorithm == "nevergrad":
-        algorithm = NevergradSearch(
-            points_to_evaluate=best_params,
-            optimizer=ng.optimizers.registry["PortfolioDiscreteOnePlusOne"],
-        )
     elif args.algorithm == "optuna":
         algorithm = OptunaSearch(points_to_evaluate=best_params, seed=args.seed)
     elif args.algorithm == "pbt":
+        print("Warning: PBT does not support seed values. args.seed will be ignored.")
         algorithm = PopulationBasedTraining(
             time_attr="training_iteration",
             perturbation_interval=args.perturbation,
@@ -809,9 +916,15 @@ def set_algorithm(experiment_name, config):
             synch=True,
         )
     elif args.algorithm == "random":
-        algorithm = BasicVariantGenerator(max_concurrent=args.jobs)
+        algorithm = BasicVariantGenerator(
+            max_concurrent=args.jobs,
+            random_state=args.seed,
+        )
+
+    # A wrapper algorithm for limiting the number of concurrent trials.
     if args.algorithm not in ["random", "pbt"]:
         algorithm = ConcurrencyLimiter(algorithm, max_concurrent=args.jobs)
+
     return algorithm
 
 

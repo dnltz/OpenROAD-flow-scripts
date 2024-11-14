@@ -51,7 +51,7 @@ export SIG_MAP_FILE = $(PLATFORM_DIR)/bp/soc_bsg_black_parrot.sigmap
 
 export ABC_CLOCK_PERIOD_IN_PS = 1250
 
-export PLACE_DENSITY = 0.20
+export PLACE_DENSITY = 0.80
 
 export MACRO_WRAPPERS = $(PLATFORM_DIR)/bp/wrappers/wrappers.tcl
 #export MACRO_PLACEMENT = $(PLATFORM_DIR)/bp/bp_single.macro_placment.cfg
@@ -61,9 +61,9 @@ export MACRO_PLACEMENT = $(PLATFORM_DIR)/bp/auto_fence2_bp_single.macro_placment
 export MACRO_BLOCKAGE_HALO = 25
 
 export PDN_TCL = $(PLATFORM_DIR)/cfg/pdn_grid_strategy_13m_9T.top.tcl
-export FASTROUTE_TCL = ./designs/$(PLATFORM)/$(DESIGN_NICKNAME)/fastroute.tcl
+export FASTROUTE_TCL = $(DESIGN_HOME)/$(PLATFORM)/$(DESIGN_NICKNAME)/fastroute.tcl
 
-ifneq ($(USE_FILL),)
+ifeq ($(USE_FILL),1)
 export DESIGN_TYPE = CHIP
 else
 export DESIGN_TYPE = CHIP_NODEN
