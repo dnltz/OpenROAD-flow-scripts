@@ -1,18 +1,37 @@
 source $::env(SCRIPTS_DIR)/synth_preamble.tcl
 
-if { [info exist ::env(SYNTH_HIERARCHICAL)] && $::env(SYNTH_HIERARCHICAL) == 1 && [file isfile $::env(SYNTH_STOP_MODULE_SCRIPT)] } {
-  puts "Sourcing $::env(SYNTH_STOP_MODULE_SCRIPT)"
-  source $::env(SYNTH_STOP_MODULE_SCRIPT)
+hierarchy -check -top $::env(DESIGN_NAME)
+
+set ungroup_threshold 0
+if { $::env(MAX_UNGROUP_SIZE) > 0 } {
+  set ungroup_threshold $::env(MAX_UNGROUP_SIZE)
+  puts "Ungroup modules of size greater than $ungroup_threshold"
 }
 
-if { [info exist ::env(SYNTH_GUT)] && $::env(SYNTH_GUT) == 1 } {
-  hierarchy -check -top $::env(DESIGN_NAME)
+set fp [open $::env(SYNTH_STATS) r]
+while {[gets $fp line] != -1} {
+    set fields [split $line " "]
+    set area [lindex $fields 0]
+    set module_name [lindex $fields 1]
+
+    if {[expr $area > $ungroup_threshold]} {
+      puts "Keeping module $module_name (area: $area)"
+      select -module $module_name
+      setattr -mod -set keep_hierarchy 1
+      select -clear
+    } else {
+      puts "Flattening module $module_name (area: $area)"
+    }
+}
+close $fp
+
+if { [env_var_equals SYNTH_GUT 1] } {
   # /deletes all cells at the top level, which will quickly optimize away
   # everything else, including macros.
   delete $::env(DESIGN_NAME)/c:*
 }
 
-synthesize_check $::env(SYNTH_FULL_ARGS)
+synthesize_check mem $::env(SYNTH_FULL_ARGS)
 
 # rename registers to have the verilog register name in its name
 # of the form \regName$_DFF_P_. We should fix yosys to make it the reg name.
@@ -23,7 +42,7 @@ renames -wire
 opt -purge
 
 # Technology mapping of adders
-if {[info exist ::env(ADDER_MAP_FILE)] && [file isfile $::env(ADDER_MAP_FILE)]} {
+if {[env_var_exists_and_non_empty ADDER_MAP_FILE] && [file isfile $::env(ADDER_MAP_FILE)]} {
   # extract the full adders
   extract_fa
   # map full adders
@@ -34,7 +53,7 @@ if {[info exist ::env(ADDER_MAP_FILE)] && [file isfile $::env(ADDER_MAP_FILE)]} 
 }
 
 # Technology mapping of latches
-if {[info exist ::env(LATCH_MAP_FILE)]} {
+if {[env_var_exists_and_non_empty LATCH_MAP_FILE]} {
   techmap -map $::env(LATCH_MAP_FILE)
 }
 
@@ -45,7 +64,7 @@ foreach cell $::env(DONT_USE_CELLS) {
 
 # Technology mapping of flip-flops
 # dfflibmap only supports one liberty file
-if {[info exist ::env(DFF_LIB_FILE)]} {
+if {[env_var_exists_and_non_empty DFF_LIB_FILE]} {
   dfflibmap -liberty $::env(DFF_LIB_FILE) {*}$dfflibmap_args
 } else {
   dfflibmap -liberty $::env(DONT_USE_SC_LIB) {*}$dfflibmap_args
@@ -79,3 +98,7 @@ tee -o $::env(REPORTS_DIR)/synth_stat.txt stat {*}$stat_libs
 
 # Write synthesized design
 write_verilog -noexpr -nohex -nodec $::env(RESULTS_DIR)/1_1_yosys.v
+# One day a more sophisticated synthesis will write out a modified
+# .sdc file after synthesis. For now, just copy the input .sdc file,
+# making synthesis more consistent with other stages.
+log_cmd exec cp $::env(SDC_FILE) $::env(RESULTS_DIR)/1_synth.sdc
